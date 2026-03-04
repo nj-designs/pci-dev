@@ -1,0 +1,86 @@
+= Buildroot Wrapper
+
+== Install Mandatory packages
+
+Buildroot requires certains pacakges to be installed on the host system prior to use.
+
+.Debian based
+[source,bash]
+----
+sudo apt-get update && sudo apt-get install -y \
+    build-essential bash bc binutils bzip2 cpio \
+    diffutils file g++ gcc git gzip make patch \
+    perl rsync sed tar unzip wget findutils \
+    libncurses-dev python3
+----
+
+.Fedora based
+[source,bash]
+----
+sudo dnf groupinstall "Development Tools" "Development Libraries"
+sudo dnf install ncurses-devel python3 perl-Data-Dumper perl-Thread-Queue \
+    bc wget rsync cpio unzip findutils which
+----
+
+.Arch based
+[source,bash]
+----
+sudo pacman -Syu --needed \
+    base-devel bc rsync cpio unzip wget \
+    ncurses python perl-data-dumper \
+    perl-thread-queue libtool
+----
+
+== Get Buildroot wrapper
+
+[source,bash]
+----
+git clone https://github.com/nj-designs/buildroot-wrapper <your_project_name>
+----
+
+
+NOTE: Remaining steps assume you're inside of <your_project_dir>
+
+
+== Init & configure Buildroot wrapper
+
+.Initialise repo for your own use
+[source,bash]
+----
+./bld.sh init
+----
+
+
+
+
+[source,bash]
+----
+./bld.sh init
+
+./bld.sh setup test_project "Test project"
+
+./bld.sh list-defconfigs
+
+# Select existing config to base new project (ex: pc_x86_64_efi_defconfig)
+cp buildroot/configs/pc_x86_64_efi_defconfig br-external/configs/test_prj_defconfig
+
+# Make this the default config
+./bld.sh defconfig test_prj_defconfig
+
+# Create initial commit
+git add .
+git commit -m"Initial commit"
+
+# Create & view manual
+./bld.sh manual
+xdg-open output/docs/manual/manual.pdf
+
+
+# Configure config
+./bld.sh menuconfig
+
+# Build result will be in output/images
+./bld.sh build
+
+
+----
