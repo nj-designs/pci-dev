@@ -84,3 +84,9 @@ xdg-open output/docs/manual/manual.pdf
 
 
 ----
+
+
+[source,bash]
+----
+qemu-system-x86_64 -m 2G -smp 2 -kernel output/images/bzImage -hdd output/images/rootfs.ext2 -enable-kvm -nographic -pidfile /tmp/njd-qemu.pid -append "console=ttyS0 root=/dev/sda"
+----
