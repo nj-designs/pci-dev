@@ -131,6 +131,7 @@ do_make_package() {
   fi
 
   cd ${BLD_ROOT_DIR}
+  make V=1 O=${OUTPUT_DIR} BR2_EXTERNAL=${BR_EXTERNAL_DIR} "${package}-dirclean"
   make V=1 O=${OUTPUT_DIR} BR2_EXTERNAL=${BR_EXTERNAL_DIR} "${package}"
 }
 
