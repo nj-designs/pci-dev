@@ -19,6 +19,8 @@ MODULE_DEVICE_TABLE(pci, crc_test_dev_ids);
 static int crc_test_dev_probe(struct pci_dev *pdev,
                               const struct pci_device_id *id) {
   void __iomem *reg_base;
+  resource_size_t reg_len;
+  u32 hw_version;
 
   int error = -ENODEV;
 
@@ -35,7 +37,21 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
                          "Failed to map reg IO memory");
   }
 
-  printk("dev_crc_dev reg_base:%px\n", reg_base);
+  reg_len = pci_resource_len(pdev, 0);
+  if (reg_len == 0) {
+    // Using -ENOMEM below stops output string getting to logs...
+    return dev_err_probe(&pdev->dev, -ENOSPC, "Zero length reg IO map");
+  }
+
+  if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM)) {
+    return dev_err_probe(&pdev->dev, -EIO, "Regmap not memory mapped");
+  }
+
+  printk("dev_crc_dev reg_base:%px reg_size:%llu\n", reg_base, reg_len);
+
+  // Now read version register
+  hw_version = ioread32(reg_base + CRC_DEV_VERSION_REG_OFFSET);
+  printk("dev_crc_dev hw_ver:0x%08X\n", hw_version);
 
   return 0;
 }

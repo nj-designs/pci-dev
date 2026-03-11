@@ -15,7 +15,8 @@
 #endif
 
 struct reg_map {
-  uint64_t ctrl;
+  uint32_t version;
+  uint32_t ctrl;
   uint64_t addr;
   uint64_t len;
   uint64_t crc;
@@ -23,7 +24,8 @@ struct reg_map {
 
 #define CRC_DEV_REG_MAP_SIZE ((uint64_t)sizeof(struct reg_map))
 
-#define CRC_DEV_CTRL_REG_ADDR ((hwaddr)offsetof(struct reg_map, ctrl))
-#define CRC_DEV_ADDR_REG_ADDR ((hwaddr)offsetof(struct reg_map, addr))
-#define CRC_DEV_LEN_REG_ADDR ((hwaddr)offsetof(struct reg_map, len))
-#define CRC_DEV_CRC_REG_ADDR ((hwaddr)offsetof(struct reg_map, crc))
+#define CRC_DEV_VERSION_REG_OFFSET ((uint64_t)offsetof(struct reg_map, version))
+#define CRC_DEV_CTRL_REG_OFFSET ((uint64_t)offsetof(struct reg_map, ctrl))
+#define CRC_DEV_ADDR_REG_OFFSET ((uint64_t)offsetof(struct reg_map, addr))
+#define CRC_DEV_LEN_REG_OFFSET ((uint64_t)offsetof(struct reg_map, len))
+#define CRC_DEV_CRC_REG_OFFSET ((uint64_t)offsetof(struct reg_map, crc))

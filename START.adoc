@@ -90,3 +90,16 @@ xdg-open output/docs/manual/manual.pdf
 ----
 qemu-system-x86_64 -m 2G -smp 2 -kernel output/images/bzImage -hdd output/images/rootfs.ext2 -enable-kvm -nographic -pidfile /tmp/njd-qemu.pid -append "console=ttyS0 root=/dev/sda"
 ----
+
+
+https://www.kernel.org/doc/html/latest/PCI/pci.html
+
+https://elixir.bootlin.com/linux/v6.19.3/source/drivers/scsi/megaraid.c#L4167
+https://elixir.bootlin.com/linux/v6.19.6/source
+
+https://www.kernel.org/doc/html/latest/driver-api/pci/pci.html
+
+https://elixir.bootlin.com/linux/v6.19.6/source/drivers/gpio/gpio-pch.c#L365
+https://elixir.bootlin.com/linux/v6.19.6/source/drivers/pci/devres.c#L666
+
+https://www.kernel.org/doc/html/latest/core-api/printk-formats.html
