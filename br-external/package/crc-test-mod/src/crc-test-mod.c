@@ -8,15 +8,35 @@
 #define CRC_TEST_DEV_VENDOR_ID 0x1B36
 #define CRC_TEST_DEV_DEVICE_ID 0x9999
 
-static struct pci_device_id crc_test_dev_ids[] = {
+#define CRC_TEST_DEV_DRV_NAME "crc_test_dev"
+
+static const struct pci_device_id crc_test_dev_ids[] = {
     {PCI_DEVICE(CRC_TEST_DEV_VENDOR_ID, CRC_TEST_DEV_DEVICE_ID)},
     {},
 };
 MODULE_DEVICE_TABLE(pci, crc_test_dev_ids);
 
-static int crc_test_dev_probe(struct pci_dev *dev,
+static int crc_test_dev_probe(struct pci_dev *pdev,
                               const struct pci_device_id *id) {
-  printk("dev_crc_dev probe called\n");
+  void __iomem *reg_base;
+
+  int error = -ENODEV;
+
+  printk("dev_crc_dev probe called 0x%04X:0x%04X\n", id->vendor, id->device);
+
+  error = pcim_enable_device(pdev);
+  if (error) {
+    return dev_err_probe(&pdev->dev, error, "Failed to enable device");
+  }
+
+  reg_base = pcim_iomap_region(pdev, 0, CRC_TEST_DEV_DRV_NAME);
+  if (IS_ERR(reg_base)) {
+    return dev_err_probe(&pdev->dev, PTR_ERR(reg_base),
+                         "Failed to map reg IO memory");
+  }
+
+  printk("dev_crc_dev reg_base:%px\n", reg_base);
+
   return 0;
 }
 
@@ -26,7 +46,7 @@ static void crc_test_dev_remove(struct pci_dev *dev) {
 };
 
 static struct pci_driver crc_test_dev_driver = {
-    .name = "crc_test_dev",
+    .name = CRC_TEST_DEV_DRV_NAME,
     .id_table = crc_test_dev_ids,
     .probe = crc_test_dev_probe,
     .remove = crc_test_dev_remove,
