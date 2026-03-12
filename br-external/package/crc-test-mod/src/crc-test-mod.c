@@ -36,6 +36,7 @@ static struct {
   } devices;
 
   dev_t crc_dev_number;
+  struct class *class;
 } crc_drv_ctx;
 
 static int crc_dev_open(struct inode *inode, struct file *file) { return 0; }
@@ -56,7 +57,7 @@ static struct file_operations crc_dev_fops = {
 
 static int crc_test_dev_probe(struct pci_dev *pdev,
                               const struct pci_device_id *id) {
-  int error, idx;
+  int error, idx, minor;
   void __iomem *reg_base;
   resource_size_t reg_len;
   u32 hw_version;
@@ -142,8 +143,18 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
     goto out_free_irq;
   }
 
+  // chrdev stuff
   cdev_init(&crc_dev->cdev, &crc_dev_fops);
   crc_dev->cdev.owner = THIS_MODULE;
+  minor = crc_drv_ctx.crc_dev_number + crc_dev->idx;
+  error = cdev_add(&crc_dev->cdev, minor, 1);
+  if (error) {
+    pr_err("%s failed to add cdev\n", crc_dev->name);
+    goto out_free_irq;
+  }
+  device_create(crc_drv_ctx.class, NULL,
+                MKDEV(MAJOR(crc_drv_ctx.crc_dev_number), minor), crc_dev,
+                "%s%d", CRC_DEV_DRV_NAME, crc_dev->idx);
 
   // Now read version register
   hw_version = ioread32(reg_base + CRC_DEV_VERSION_REG_OFFSET);
@@ -175,8 +186,11 @@ static void crc_test_dev_remove(struct pci_dev *pdev) {
   free_irq(crc_dev->irq, (void *)crc_dev);
   pci_free_irq_vectors(pdev);
 
-  pci_set_drvdata(pdev, NULL);
+  device_destroy(crc_drv_ctx.class,
+                 MKDEV(MAJOR(crc_drv_ctx.crc_dev_number), crc_dev->idx));
+  cdev_del(&crc_dev->cdev);
 
+  pci_set_drvdata(pdev, NULL);
   kfree(crc_dev);
 };
 
@@ -192,6 +206,8 @@ static int __init crc_test_dev_init(void) {
 
   pr_info("%s module_init\n", CRC_DEV_DRV_NAME);
 
+  crc_drv_ctx.class = class_create(CRC_DEV_DRV_NAME);
+
   error = alloc_chrdev_region(&crc_drv_ctx.crc_dev_number, 0,
                               CRC_DEV_MAX_DEVICE_CNT, CRC_DEV_DRV_NAME);
   if (error) {
@@ -205,7 +221,10 @@ static int __init crc_test_dev_init(void) {
     goto out;
   }
 
+  return 0;
+
 out:
+  class_destroy(crc_drv_ctx.class);
   return error;
 }
 
@@ -214,6 +233,7 @@ static void __exit crc_test_dev_exit(void) {
 
   pci_unregister_driver(&crc_test_dev_driver);
   unregister_chrdev_region(crc_drv_ctx.crc_dev_number, CRC_DEV_MAX_DEVICE_CNT);
+  class_destroy(crc_drv_ctx.class);
 }
 
 module_init(crc_test_dev_init);
