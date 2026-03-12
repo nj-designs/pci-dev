@@ -19,22 +19,25 @@ static const struct pci_device_id crc_test_dev_ids[] = {
 };
 MODULE_DEVICE_TABLE(pci, crc_test_dev_ids);
 
-static struct {
-  struct list_head devices;
-  spinlock_t lock;
-} crc_device_list;
-
 struct crc_dev {
-  struct list_head dev_list_node;
   char name[sizeof(CRC_DEV_DRV_NAME) + sizeof(":XXXX") + 1];
   void __iomem *reg_base;
   struct pci_dev *pdev;
   u16 uid;
   int irq;
+  int idx;
   struct cdev cdev;
 };
 
-static dev_t crc_dev_number;
+static struct {
+  struct {
+    struct crc_dev *refs[CRC_DEV_MAX_DEVICE_CNT];
+    spinlock_t lock;
+  } devices;
+
+  dev_t crc_dev_number;
+} crc_drv_ctx;
+
 static int crc_dev_open(struct inode *inode, struct file *file) { return 0; }
 
 static int crc_dev_release(struct inode *inode, struct file *file) { return 0; }
@@ -53,7 +56,7 @@ static struct file_operations crc_dev_fops = {
 
 static int crc_test_dev_probe(struct pci_dev *pdev,
                               const struct pci_device_id *id) {
-  int error;
+  int error, idx;
   void __iomem *reg_base;
   resource_size_t reg_len;
   u32 hw_version;
@@ -69,6 +72,21 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
     goto out_free_dev_priv;
   }
 
+  spin_lock(&crc_drv_ctx.devices.lock);
+  for (idx = 0; idx < CRC_DEV_MAX_DEVICE_CNT; idx++) {
+    if (!crc_drv_ctx.devices.refs[idx]) {
+      break;
+    }
+  }
+  spin_unlock(&crc_drv_ctx.devices.lock);
+
+  if (idx == CRC_DEV_MAX_DEVICE_CNT) {
+    pr_err("%s too many devices\n", CRC_DEV_DRV_NAME);
+    error = -ENOSPC;
+    goto out_free_dev_priv;
+  }
+
+  crc_dev->idx = idx;
   crc_dev->pdev = pdev;
   crc_dev->uid = pci_dev_id(pdev);
   scnprintf(crc_dev->name, sizeof(crc_dev->name), "%s:%04X", CRC_DEV_DRV_NAME,
@@ -133,9 +151,7 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
 
   pci_set_drvdata(pdev, crc_dev);
 
-  spin_lock(&crc_device_list.lock);
-  list_add_tail(&crc_dev->dev_list_node, &crc_device_list.devices);
-  spin_unlock(&crc_device_list.lock);
+  crc_drv_ctx.devices.refs[crc_dev->idx] = crc_dev;
 
   return 0;
 
@@ -154,9 +170,7 @@ static void crc_test_dev_remove(struct pci_dev *pdev) {
 
   pr_info("%s remove\n", crc_dev->name);
 
-  spin_lock(&crc_device_list.lock);
-  list_del(&crc_dev->dev_list_node);
-  spin_unlock(&crc_device_list.lock);
+  crc_drv_ctx.devices.refs[crc_dev->idx] = NULL;
 
   free_irq(crc_dev->irq, (void *)crc_dev);
   pci_free_irq_vectors(pdev);
@@ -176,11 +190,10 @@ static struct pci_driver crc_test_dev_driver = {
 static int __init crc_test_dev_init(void) {
   int error;
 
-  spin_lock_init(&crc_device_list.lock);
-  INIT_LIST_HEAD(&crc_device_list.devices);
+  pr_info("%s module_init\n", CRC_DEV_DRV_NAME);
 
-  error = alloc_chrdev_region(&crc_dev_number, 0, CRC_DEV_MAX_DEVICE_CNT,
-                              CRC_DEV_DRV_NAME);
+  error = alloc_chrdev_region(&crc_drv_ctx.crc_dev_number, 0,
+                              CRC_DEV_MAX_DEVICE_CNT, CRC_DEV_DRV_NAME);
   if (error) {
     pr_err("%s failed to alloc chrdevs\n", CRC_DEV_DRV_NAME);
     goto out;
@@ -192,15 +205,15 @@ static int __init crc_test_dev_init(void) {
     goto out;
   }
 
-  pr_info("%s register driver\n", CRC_DEV_DRV_NAME);
 out:
   return error;
 }
 
 static void __exit crc_test_dev_exit(void) {
-  pr_info("CRC Test Device: Module removed\n");
+  pr_info("%s module_exit\n", CRC_DEV_DRV_NAME);
+
   pci_unregister_driver(&crc_test_dev_driver);
-  unregister_chrdev_region(crc_dev_number, CRC_DEV_MAX_DEVICE_CNT);
+  unregister_chrdev_region(crc_drv_ctx.crc_dev_number, CRC_DEV_MAX_DEVICE_CNT);
 }
 
 module_init(crc_test_dev_init);
