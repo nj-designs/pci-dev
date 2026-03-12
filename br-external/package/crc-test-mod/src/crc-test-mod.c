@@ -20,10 +20,9 @@ static const struct pci_device_id crc_test_dev_ids[] = {
 MODULE_DEVICE_TABLE(pci, crc_test_dev_ids);
 
 struct crc_dev {
-  char name[sizeof(CRC_DEV_DRV_NAME) + sizeof(":XXXX") + 1];
+  char name[sizeof(CRC_DEV_DRV_NAME) + sizeof("xx") + 1];
   void __iomem *reg_base;
   struct pci_dev *pdev;
-  u16 uid;
   int irq;
   int idx;
   struct cdev cdev;
@@ -39,9 +38,27 @@ static struct {
   struct class *class;
 } crc_drv_ctx;
 
-static int crc_dev_open(struct inode *inode, struct file *file) { return 0; }
+static int crc_dev_open(struct inode *inode, struct file *file) {
+  struct crc_dev *crc_dev;
 
-static int crc_dev_release(struct inode *inode, struct file *file) { return 0; }
+  crc_dev = container_of(inode->i_cdev, struct crc_dev, cdev);
+
+  file->private_data = crc_dev;
+
+  pr_info("%s open called\n", crc_dev->name);
+
+  return 0;
+}
+
+static int crc_dev_release(struct inode *inode, struct file *file) {
+  struct crc_dev *crc_dev;
+
+  crc_dev = (struct crc_dev *)file->private_data;
+
+  pr_info("%s release called\n", crc_dev->name);
+
+  return 0;
+}
 
 static irqreturn_t crc_test_dev_isr(int irq, void *dev_id) {
 
@@ -89,9 +106,8 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
 
   crc_dev->idx = idx;
   crc_dev->pdev = pdev;
-  crc_dev->uid = pci_dev_id(pdev);
-  scnprintf(crc_dev->name, sizeof(crc_dev->name), "%s:%04X", CRC_DEV_DRV_NAME,
-            crc_dev->uid);
+  scnprintf(crc_dev->name, sizeof(crc_dev->name), "%s%d", CRC_DEV_DRV_NAME,
+            crc_dev->idx);
 
   error = pcim_enable_device(pdev);
   if (error) {
@@ -99,7 +115,7 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
     goto out_free_dev_priv;
   }
 
-  reg_base = pcim_iomap_region(pdev, 0, CRC_DEV_DRV_NAME);
+  reg_base = pcim_iomap_region(pdev, 0, crc_dev->name);
   if (IS_ERR(reg_base)) {
     error = dev_err_probe(&pdev->dev, PTR_ERR(reg_base),
                           "%s Failed to map reg IO memory", crc_dev->name);
@@ -154,7 +170,7 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
   }
   device_create(crc_drv_ctx.class, NULL,
                 MKDEV(MAJOR(crc_drv_ctx.crc_dev_number), minor), crc_dev,
-                "%s%d", CRC_DEV_DRV_NAME, crc_dev->idx);
+                crc_dev->name);
 
   // Now read version register
   hw_version = ioread32(reg_base + CRC_DEV_VERSION_REG_OFFSET);
