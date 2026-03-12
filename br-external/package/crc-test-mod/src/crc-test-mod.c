@@ -1,3 +1,5 @@
+#include <linux/cdev.h>
+#include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -7,6 +9,7 @@
 
 #define CRC_DEV_VENDOR_ID 0x1B36
 #define CRC_DEV_DEVICE_ID 0x9999
+#define CRC_DEV_MAX_DEVICE_CNT 4
 
 #define CRC_DEV_DRV_NAME "crc_dev"
 
@@ -28,12 +31,25 @@ struct crc_dev {
   struct pci_dev *pdev;
   u16 uid;
   int irq;
+  struct cdev cdev;
 };
+
+static dev_t crc_dev_number;
+static int crc_dev_open(struct inode *inode, struct file *file) { return 0; }
+
+static int crc_dev_release(struct inode *inode, struct file *file) { return 0; }
 
 static irqreturn_t crc_test_dev_isr(int irq, void *dev_id) {
 
   return IRQ_HANDLED;
 }
+
+static struct file_operations crc_dev_fops = {
+    .owner = THIS_MODULE,
+    .open = crc_dev_open,
+    .release = crc_dev_release,
+
+};
 
 static int crc_test_dev_probe(struct pci_dev *pdev,
                               const struct pci_device_id *id) {
@@ -108,6 +124,9 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
     goto out_free_irq;
   }
 
+  cdev_init(&crc_dev->cdev, &crc_dev_fops);
+  crc_dev->cdev.owner = THIS_MODULE;
+
   // Now read version register
   hw_version = ioread32(reg_base + CRC_DEV_VERSION_REG_OFFSET);
   pr_info("%s hw_ver:0x%08X\n", crc_dev->name, hw_version);
@@ -155,17 +174,33 @@ static struct pci_driver crc_test_dev_driver = {
 };
 
 static int __init crc_test_dev_init(void) {
-  pr_info("CRC Test Device: Module loaded into the kernel\n");
+  int error;
 
   spin_lock_init(&crc_device_list.lock);
   INIT_LIST_HEAD(&crc_device_list.devices);
 
-  return pci_register_driver(&crc_test_dev_driver);
+  error = alloc_chrdev_region(&crc_dev_number, 0, CRC_DEV_MAX_DEVICE_CNT,
+                              CRC_DEV_DRV_NAME);
+  if (error) {
+    pr_err("%s failed to alloc chrdevs\n", CRC_DEV_DRV_NAME);
+    goto out;
+  }
+
+  error = pci_register_driver(&crc_test_dev_driver);
+  if (error) {
+    pr_err("%s failed to register driver\n", CRC_DEV_DRV_NAME);
+    goto out;
+  }
+
+  pr_info("%s register driver\n", CRC_DEV_DRV_NAME);
+out:
+  return error;
 }
 
 static void __exit crc_test_dev_exit(void) {
   pr_info("CRC Test Device: Module removed\n");
   pci_unregister_driver(&crc_test_dev_driver);
+  unregister_chrdev_region(crc_dev_number, CRC_DEV_MAX_DEVICE_CNT);
 }
 
 module_init(crc_test_dev_init);
