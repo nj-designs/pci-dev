@@ -1,4 +1,4 @@
-obj-m += crc-test-mod.o
+obj-m += crc-xcel.o
 
 all:
 	$(MAKE) -C $(LINUX_DIR) M=$(PWD) modules

@@ -5,22 +5,22 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 
-#include "pci-crcdev-regmap.h"
+#include "pci-crc-xcel-regmap.h"
 
-#define CRC_DEV_VENDOR_ID 0x1B36
-#define CRC_DEV_DEVICE_ID 0x9999
-#define CRC_DEV_MAX_DEVICE_CNT 4
+#define CRC_XCEL_VENDOR_ID 0x1B36
+#define CRC_XCEL_DEVICE_ID 0x9999
+#define CRC_XCEL_MAX_DEVICE_CNT 4
 
-#define CRC_DEV_DRV_NAME "crc_dev"
+#define CRC_XCEL_DRV_NAME "crc_xcel"
 
 static const struct pci_device_id crc_test_dev_ids[] = {
-    {PCI_DEVICE(CRC_DEV_VENDOR_ID, CRC_DEV_DEVICE_ID)},
+    {PCI_DEVICE(CRC_XCEL_VENDOR_ID, CRC_XCEL_DEVICE_ID)},
     {},
 };
 MODULE_DEVICE_TABLE(pci, crc_test_dev_ids);
 
 struct crc_dev {
-  char name[sizeof(CRC_DEV_DRV_NAME) + sizeof("xx") + 1];
+  char name[sizeof(CRC_XCEL_DRV_NAME) + sizeof("xx") + 1];
   void __iomem *reg_base;
   struct pci_dev *pdev;
   int irq;
@@ -30,15 +30,15 @@ struct crc_dev {
 
 static struct {
   struct {
-    struct crc_dev *refs[CRC_DEV_MAX_DEVICE_CNT];
+    struct crc_dev *refs[CRC_XCEL_MAX_DEVICE_CNT];
     spinlock_t lock;
   } devices;
 
-  dev_t crc_dev_number;
+  dev_t crc_xcel_number;
   struct class *class;
 } crc_drv_ctx;
 
-static int crc_dev_open(struct inode *inode, struct file *file) {
+static int crc_xcel_open(struct inode *inode, struct file *file) {
   struct crc_dev *crc_dev;
 
   crc_dev = container_of(inode->i_cdev, struct crc_dev, cdev);
@@ -50,7 +50,7 @@ static int crc_dev_open(struct inode *inode, struct file *file) {
   return 0;
 }
 
-static int crc_dev_release(struct inode *inode, struct file *file) {
+static int crc_xcel_release(struct inode *inode, struct file *file) {
   struct crc_dev *crc_dev;
 
   crc_dev = (struct crc_dev *)file->private_data;
@@ -65,10 +65,10 @@ static irqreturn_t crc_test_dev_isr(int irq, void *dev_id) {
   return IRQ_HANDLED;
 }
 
-static struct file_operations crc_dev_fops = {
+static struct file_operations crc_xcel_fops = {
     .owner = THIS_MODULE,
-    .open = crc_dev_open,
-    .release = crc_dev_release,
+    .open = crc_xcel_open,
+    .release = crc_xcel_release,
 
 };
 
@@ -80,7 +80,7 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
   u32 hw_version;
   struct crc_dev *crc_dev = NULL;
 
-  pr_info("%s probe device:0x%04X:0x%04X\n", CRC_DEV_DRV_NAME, id->vendor,
+  pr_info("%s probe device:0x%04X:0x%04X\n", CRC_XCEL_DRV_NAME, id->vendor,
           id->device);
 
   crc_dev = kmalloc(sizeof(*crc_dev), GFP_KERNEL | __GFP_ZERO);
@@ -91,22 +91,22 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
   }
 
   spin_lock(&crc_drv_ctx.devices.lock);
-  for (idx = 0; idx < CRC_DEV_MAX_DEVICE_CNT; idx++) {
+  for (idx = 0; idx < CRC_XCEL_MAX_DEVICE_CNT; idx++) {
     if (!crc_drv_ctx.devices.refs[idx]) {
       break;
     }
   }
   spin_unlock(&crc_drv_ctx.devices.lock);
 
-  if (idx == CRC_DEV_MAX_DEVICE_CNT) {
-    pr_err("%s too many devices\n", CRC_DEV_DRV_NAME);
+  if (idx == CRC_XCEL_MAX_DEVICE_CNT) {
+    pr_err("%s too many devices\n", CRC_XCEL_DRV_NAME);
     error = -ENOSPC;
     goto out_free_dev_priv;
   }
 
   crc_dev->idx = idx;
   crc_dev->pdev = pdev;
-  scnprintf(crc_dev->name, sizeof(crc_dev->name), "%s%d", CRC_DEV_DRV_NAME,
+  scnprintf(crc_dev->name, sizeof(crc_dev->name), "%s%d", CRC_XCEL_DRV_NAME,
             crc_dev->idx);
 
   error = pcim_enable_device(pdev);
@@ -125,12 +125,12 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
   pr_info("%s reg_base:%px\n", crc_dev->name, reg_base);
 
   reg_len = pci_resource_len(pdev, 0);
-  if (reg_len != CRC_DEV_REG_MAP_SIZE) {
+  if (reg_len != CRC_XCEL_REG_MAP_SIZE) {
     // Using -ENOMEM below stops output string getting to logs...
     error =
         dev_err_probe(&pdev->dev, -EINVAL,
                       "%s Unexpected reg_map length. Got:%llu, expected:%llu",
-                      crc_dev->name, reg_len, CRC_DEV_REG_MAP_SIZE);
+                      crc_dev->name, reg_len, CRC_XCEL_REG_MAP_SIZE);
     goto out_free_dev_priv;
   }
 
@@ -160,20 +160,20 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
   }
 
   // chrdev stuff
-  cdev_init(&crc_dev->cdev, &crc_dev_fops);
+  cdev_init(&crc_dev->cdev, &crc_xcel_fops);
   crc_dev->cdev.owner = THIS_MODULE;
-  minor = crc_drv_ctx.crc_dev_number + crc_dev->idx;
+  minor = crc_drv_ctx.crc_xcel_number + crc_dev->idx;
   error = cdev_add(&crc_dev->cdev, minor, 1);
   if (error) {
     pr_err("%s failed to add cdev\n", crc_dev->name);
     goto out_free_irq;
   }
   device_create(crc_drv_ctx.class, NULL,
-                MKDEV(MAJOR(crc_drv_ctx.crc_dev_number), minor), crc_dev,
+                MKDEV(MAJOR(crc_drv_ctx.crc_xcel_number), minor), crc_dev,
                 crc_dev->name);
 
   // Now read version register
-  hw_version = ioread32(reg_base + CRC_DEV_VERSION_REG_OFFSET);
+  hw_version = ioread32(reg_base + CRC_XCEL_VERSION_REG_OFFSET);
   pr_info("%s hw_ver:0x%08X\n", crc_dev->name, hw_version);
 
   pci_set_drvdata(pdev, crc_dev);
@@ -203,7 +203,7 @@ static void crc_test_dev_remove(struct pci_dev *pdev) {
   pci_free_irq_vectors(pdev);
 
   device_destroy(crc_drv_ctx.class,
-                 MKDEV(MAJOR(crc_drv_ctx.crc_dev_number), crc_dev->idx));
+                 MKDEV(MAJOR(crc_drv_ctx.crc_xcel_number), crc_dev->idx));
   cdev_del(&crc_dev->cdev);
 
   pci_set_drvdata(pdev, NULL);
@@ -211,7 +211,7 @@ static void crc_test_dev_remove(struct pci_dev *pdev) {
 };
 
 static struct pci_driver crc_test_dev_driver = {
-    .name = CRC_DEV_DRV_NAME,
+    .name = CRC_XCEL_DRV_NAME,
     .id_table = crc_test_dev_ids,
     .probe = crc_test_dev_probe,
     .remove = crc_test_dev_remove,
@@ -220,20 +220,20 @@ static struct pci_driver crc_test_dev_driver = {
 static int __init crc_test_dev_init(void) {
   int error;
 
-  pr_info("%s module_init\n", CRC_DEV_DRV_NAME);
+  pr_info("%s module_init\n", CRC_XCEL_DRV_NAME);
 
-  crc_drv_ctx.class = class_create(CRC_DEV_DRV_NAME);
+  crc_drv_ctx.class = class_create(CRC_XCEL_DRV_NAME);
 
-  error = alloc_chrdev_region(&crc_drv_ctx.crc_dev_number, 0,
-                              CRC_DEV_MAX_DEVICE_CNT, CRC_DEV_DRV_NAME);
+  error = alloc_chrdev_region(&crc_drv_ctx.crc_xcel_number, 0,
+                              CRC_XCEL_MAX_DEVICE_CNT, CRC_XCEL_DRV_NAME);
   if (error) {
-    pr_err("%s failed to alloc chrdevs\n", CRC_DEV_DRV_NAME);
+    pr_err("%s failed to alloc chrdevs\n", CRC_XCEL_DRV_NAME);
     goto out;
   }
 
   error = pci_register_driver(&crc_test_dev_driver);
   if (error) {
-    pr_err("%s failed to register driver\n", CRC_DEV_DRV_NAME);
+    pr_err("%s failed to register driver\n", CRC_XCEL_DRV_NAME);
     goto out;
   }
 
@@ -245,10 +245,11 @@ out:
 }
 
 static void __exit crc_test_dev_exit(void) {
-  pr_info("%s module_exit\n", CRC_DEV_DRV_NAME);
+  pr_info("%s module_exit\n", CRC_XCEL_DRV_NAME);
 
   pci_unregister_driver(&crc_test_dev_driver);
-  unregister_chrdev_region(crc_drv_ctx.crc_dev_number, CRC_DEV_MAX_DEVICE_CNT);
+  unregister_chrdev_region(crc_drv_ctx.crc_xcel_number,
+                           CRC_XCEL_MAX_DEVICE_CNT);
   class_destroy(crc_drv_ctx.class);
 }
 
