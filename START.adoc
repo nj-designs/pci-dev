@@ -103,3 +103,6 @@ https://elixir.bootlin.com/linux/v6.19.6/source/drivers/gpio/gpio-pch.c#L365
 https://elixir.bootlin.com/linux/v6.19.6/source/drivers/pci/devres.c#L666
 
 https://www.kernel.org/doc/html/latest/core-api/printk-formats.html
+
+
+builroot vars: 18.6.2 generic-package reference

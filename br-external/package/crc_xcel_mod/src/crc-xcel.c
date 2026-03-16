@@ -5,13 +5,38 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 
-#include "pci-crc-xcel-regmap.h"
+#define CRC_XCEL_BLD_INTERNAL
+#include "crc-xcel-drv.h"
 
 #define CRC_XCEL_VENDOR_ID 0x1B36
 #define CRC_XCEL_DEVICE_ID 0x9999
 #define CRC_XCEL_MAX_DEVICE_CNT 4
 
 #define CRC_XCEL_DRV_NAME "crc_xcel"
+
+/*
+ **********************************************************************
+ * Copied from qemu crc xcel device source
+ */
+struct reg_map {
+  uint32_t version;
+  uint32_t ctrl;
+  uint64_t addr;
+  uint64_t len;
+  uint64_t crc;
+};
+
+#define CRC_XCEL_REG_MAP_SIZE ((uint64_t)sizeof(struct reg_map))
+
+#define CRC_XCEL_VERSION_REG_OFFSET                                            \
+  ((uint64_t)offsetof(struct reg_map, version))
+#define CRC_XCEL_CTRL_REG_OFFSET ((uint64_t)offsetof(struct reg_map, ctrl))
+#define CRC_XCEL_ADDR_REG_OFFSET ((uint64_t)offsetof(struct reg_map, addr))
+#define CRC_XCEL_LEN_REG_OFFSET ((uint64_t)offsetof(struct reg_map, len))
+#define CRC_XCEL_CRC_REG_OFFSET ((uint64_t)offsetof(struct reg_map, crc))
+/*
+ **********************************************************************
+ */
 
 static const struct pci_device_id crc_test_dev_ids[] = {
     {PCI_DEVICE(CRC_XCEL_VENDOR_ID, CRC_XCEL_DEVICE_ID)},
@@ -60,6 +85,35 @@ static int crc_xcel_release(struct inode *inode, struct file *file) {
   return 0;
 }
 
+static long crc_xcel_ioctl(struct file *file, unsigned int cmd,
+                           unsigned long arg) {
+
+  struct crc_dev *crc_dev = file->private_data;
+
+  switch (cmd) {
+  case CRC_XCEL_GET_VERSION_INFO: {
+    struct crc_xcel_version_info version_info;
+
+    version_info.hw_version =
+        ioread32(crc_dev->reg_base + CRC_XCEL_VERSION_REG_OFFSET);
+    version_info.drv_version = 0x55;
+
+    if (copy_to_user((struct crc_xcel_version_info __user *)arg, &version_info,
+                     sizeof(version_info))) {
+      return -EFAULT;
+    }
+
+    break;
+  }
+
+  default: {
+    return -ENOTTY;
+  }
+  }
+
+  return 0;
+}
+
 static irqreturn_t crc_test_dev_isr(int irq, void *dev_id) {
 
   return IRQ_HANDLED;
@@ -68,6 +122,7 @@ static irqreturn_t crc_test_dev_isr(int irq, void *dev_id) {
 static struct file_operations crc_xcel_fops = {
     .owner = THIS_MODULE,
     .open = crc_xcel_open,
+    .unlocked_ioctl = crc_xcel_ioctl,
     .release = crc_xcel_release,
 
 };

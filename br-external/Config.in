@@ -1,3 +1,4 @@
 menu "PCI Dev Packages"
 source "$BR2_EXTERNAL_PCI_DEV_PATH/package/crc_xcel_mod/Config.in"
+source "$BR2_EXTERNAL_PCI_DEV_PATH/package/crc_xcel_lib/Config.in"
 endmenu

@@ -1,0 +1,10 @@
+config BR2_PACKAGE_CRC_XCEL_LIB
+	bool "crc-xcel-lib"
+  depends on BR2_PACKAGE_CRC_XCEL_MOD
+  help
+    library for crc_xcel driver
+
+    https://github.com/nj-designs
+
+comment "Needs kernel module"
+  depends on !BR2_PACKAGE_CRC_XCEL_MOD
