@@ -1,6 +1,7 @@
 #include <linux/cdev.h>
 #include <linux/fs.h>
 #include <linux/init.h>
+#include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -88,21 +89,56 @@ static int crc_xcel_release(struct inode *inode, struct file *file) {
 static long crc_xcel_ioctl(struct file *file, unsigned int cmd,
                            unsigned long arg) {
 
+  void __user *argp = (void __user *)arg;
   struct crc_dev *crc_dev = file->private_data;
 
   switch (cmd) {
   case CRC_XCEL_GET_VERSION_INFO: {
     struct crc_xcel_version_info version_info;
 
+    memset(&version_info, 0, sizeof(version_info));
+
     version_info.hw_version =
         ioread32(crc_dev->reg_base + CRC_XCEL_VERSION_REG_OFFSET);
     version_info.drv_version = 0x55;
 
-    if (copy_to_user((struct crc_xcel_version_info __user *)arg, &version_info,
-                     sizeof(version_info))) {
+    if (copy_to_user(argp, &version_info, sizeof(version_info))) {
       return -EFAULT;
     }
 
+    break;
+  }
+
+  case CRC_XCEL_RESET_CRC: {
+    const uint64_t crc_default = (uint64_t)0xBDFFFFFFFA;
+    void *addr = crc_dev->reg_base + CRC_XCEL_CRC_REG_OFFSET;
+#ifdef writeq
+    writeq(crc_default, addr);
+#else
+#error Port me!!
+#endif
+    break;
+  }
+
+  case CRC_XCEL_READ_CRC: {
+#ifdef readq
+    uint64_t crc_val = readq(crc_dev->reg_base + CRC_XCEL_CRC_REG_OFFSET);
+#else
+#error Port me!!
+#endif
+    if (copy_to_user(argp, &crc_val, sizeof(uint64_t))) {
+      return -EFAULT;
+    }
+    break;
+  }
+
+  case CRC_XCEL_CRC_BUFFER: {
+    struct crc_xcel_gen_buffer_crc gen_buffer;
+    if (copy_from_user(&gen_buffer, argp, sizeof(gen_buffer))) {
+      return -EFAULT;
+    }
+    pr_info("%s crc buffer ptr:0x%llx len:%u\n", crc_dev->name, gen_buffer.addr,
+            gen_buffer.len);
     break;
   }
 

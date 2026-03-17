@@ -18,6 +18,11 @@
 
 static int _get_version(struct crc_xcel_device *device,
                         struct crc_xcel_version_info *version_info);
+static int _reset(struct crc_xcel_device *device);
+
+static int _read_crc(struct crc_xcel_device *device, uint64_t *crc_val);
+static int _crc_buffer(struct crc_xcel_device *device,
+                       struct crc_xcel_gen_buffer_crc *gen_buffer);
 
 int crc_xcel_open(const char *df, struct crc_xcel_device *device) {
   assert(df != NULL);
@@ -31,6 +36,9 @@ int crc_xcel_open(const char *df, struct crc_xcel_device *device) {
   }
 
   device->get_version = _get_version;
+  device->reset = _reset;
+  device->read_crc = _read_crc;
+  device->crc_buffer = _crc_buffer;
 
   return 0;
 };
@@ -50,4 +58,17 @@ static int _get_version(struct crc_xcel_device *device,
   assert(version_info != NULL);
 
   return ioctl(device->fd, CRC_XCEL_GET_VERSION_INFO, version_info);
+}
+
+static int _reset(struct crc_xcel_device *device) {
+  return ioctl(device->fd, CRC_XCEL_RESET_CRC);
+}
+
+static int _read_crc(struct crc_xcel_device *device, uint64_t *crc_val) {
+  return ioctl(device->fd, CRC_XCEL_READ_CRC, crc_val);
+}
+
+static int _crc_buffer(struct crc_xcel_device *device,
+                       struct crc_xcel_gen_buffer_crc *gen_buffer) {
+  return ioctl(device->fd, CRC_XCEL_CRC_BUFFER, gen_buffer);
 }
