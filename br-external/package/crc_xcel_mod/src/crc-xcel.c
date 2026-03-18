@@ -64,6 +64,22 @@ static struct {
   struct class *class;
 } crc_drv_ctx;
 
+static void crc_xcel_writeq(u64 val, volatile void __iomem *addr) {
+#ifdef writeq
+  writeq(val, addr);
+#else
+#error Port me!!
+#endif
+}
+
+static u64 crc_xcel_readq(volatile void __iomem *addr) {
+#ifdef readq
+  return readq(addr);
+#else
+#error Port me!!
+#endif
+}
+
 static int crc_xcel_open(struct inode *inode, struct file *file) {
   struct crc_dev *crc_dev;
 
@@ -111,21 +127,13 @@ static long crc_xcel_ioctl(struct file *file, unsigned int cmd,
 
   case CRC_XCEL_RESET_CRC: {
     const uint64_t crc_default = (uint64_t)0xBDFFFFFFFA;
-    void *addr = crc_dev->reg_base + CRC_XCEL_CRC_REG_OFFSET;
-#ifdef writeq
-    writeq(crc_default, addr);
-#else
-#error Port me!!
-#endif
+    crc_xcel_writeq(crc_default, crc_dev->reg_base + CRC_XCEL_CRC_REG_OFFSET);
     break;
   }
 
   case CRC_XCEL_READ_CRC: {
-#ifdef readq
-    uint64_t crc_val = readq(crc_dev->reg_base + CRC_XCEL_CRC_REG_OFFSET);
-#else
-#error Port me!!
-#endif
+    uint64_t crc_val =
+        crc_xcel_readq(crc_dev->reg_base + CRC_XCEL_CRC_REG_OFFSET);
     if (copy_to_user(argp, &crc_val, sizeof(uint64_t))) {
       return -EFAULT;
     }
@@ -139,6 +147,7 @@ static long crc_xcel_ioctl(struct file *file, unsigned int cmd,
     }
     pr_info("%s crc buffer ptr:0x%llx len:%u\n", crc_dev->name, gen_buffer.addr,
             gen_buffer.len);
+    iowrite32(0xAA66AABB, crc_dev->reg_base + CRC_XCEL_CTRL_REG_OFFSET);
     break;
   }
 
@@ -152,6 +161,7 @@ static long crc_xcel_ioctl(struct file *file, unsigned int cmd,
 
 static irqreturn_t crc_test_dev_isr(int irq, void *dev_id) {
 
+  pr_info("IRQ recevied\n");
   return IRQ_HANDLED;
 }
 
@@ -270,6 +280,8 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
   pci_set_drvdata(pdev, crc_dev);
 
   crc_drv_ctx.devices.refs[crc_dev->idx] = crc_dev;
+
+  pci_set_master(pdev);
 
   return 0;
 
