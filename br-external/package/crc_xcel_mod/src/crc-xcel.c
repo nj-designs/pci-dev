@@ -1,4 +1,5 @@
 #include <linux/cdev.h>
+#include <linux/dma-mapping.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
@@ -102,6 +103,54 @@ static int crc_xcel_release(struct inode *inode, struct file *file) {
   return 0;
 }
 
+static int
+crc_xcel_crc_buffer(struct crc_dev *crc_dev,
+                    const struct crc_xcel_gen_buffer_crc *gen_buffer) {
+  int error = 0;
+  int nr_pages;
+  struct page **pages = NULL;
+  long nr_pages_pinned, pinned_page_idx;
+
+  pr_info("%s crc buffer ptr:0x%llx len:%u\n", crc_dev->name, gen_buffer->addr,
+          gen_buffer->len);
+
+  nr_pages = DIV_ROUND_UP(gen_buffer->len, PAGE_SIZE);
+
+  pages = kcalloc(nr_pages, sizeof(*pages), GFP_KERNEL);
+  if (!pages) {
+    error = -ENOMEM;
+    goto err_exit;
+  }
+
+  nr_pages_pinned = pin_user_pages_fast(gen_buffer->addr, nr_pages,
+                                        FOLL_WRITE | FOLL_LONGTERM, pages);
+  if (nr_pages_pinned != nr_pages) {
+    pr_err("%s wrong pinned page cnt (%ld/%d)\n", crc_dev->name,
+           nr_pages_pinned, nr_pages);
+    if (nr_pages_pinned >= 0) {
+      error = -ENOMEM;
+      goto err_exit_unpin;
+    }
+    error = nr_pages_pinned;
+    goto err_exit_free_pages;
+  }
+
+  // iowrite32(0xAA66AABB, crc_dev->reg_base + CRC_XCEL_CTRL_REG_OFFSET);
+  pr_info("%s nr_pages:%d\n", crc_dev->name, nr_pages);
+
+err_exit_unpin:
+  for (pinned_page_idx = 0; pinned_page_idx < nr_pages_pinned;
+       pinned_page_idx++) {
+    unpin_user_page(pages[pinned_page_idx]);
+  }
+err_exit_free_pages:
+  if (pages) {
+    kfree(pages);
+  }
+err_exit:
+  return error;
+}
+
 static long crc_xcel_ioctl(struct file *file, unsigned int cmd,
                            unsigned long arg) {
 
@@ -145,9 +194,7 @@ static long crc_xcel_ioctl(struct file *file, unsigned int cmd,
     if (copy_from_user(&gen_buffer, argp, sizeof(gen_buffer))) {
       return -EFAULT;
     }
-    pr_info("%s crc buffer ptr:0x%llx len:%u\n", crc_dev->name, gen_buffer.addr,
-            gen_buffer.len);
-    iowrite32(0xAA66AABB, crc_dev->reg_base + CRC_XCEL_CTRL_REG_OFFSET);
+    crc_xcel_crc_buffer(crc_dev, &gen_buffer);
     break;
   }
 
@@ -272,6 +319,13 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
   device_create(crc_drv_ctx.class, NULL,
                 MKDEV(MAJOR(crc_drv_ctx.crc_xcel_number), minor), crc_dev,
                 crc_dev->name);
+
+  error = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+  if (error) {
+    dev_err_probe(&pdev->dev, error, "%s failed to set DMA mask\n",
+                  crc_dev->name);
+    goto out_free_irq;
+  }
 
   // Now read version register
   hw_version = ioread32(reg_base + CRC_XCEL_VERSION_REG_OFFSET);
