@@ -1,5 +1,7 @@
 #include <linux/cdev.h>
+#include <linux/scatterlist.h>
 #include <linux/dma-mapping.h>
+#include <linux/completion.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
@@ -23,19 +25,23 @@
 struct reg_map {
   uint32_t version;
   uint32_t ctrl;
+  uint32_t status;
   uint64_t addr;
   uint64_t len;
   uint64_t crc;
-};
+} __attribute__((aligned(64)));
 
-#define CRC_XCEL_REG_MAP_SIZE ((uint64_t)sizeof(struct reg_map))
+#define CRC_XCEL_DEV_REG_MAP_SIZE ((uint64_t)sizeof(struct reg_map))
 
-#define CRC_XCEL_VERSION_REG_OFFSET                                            \
-  ((uint64_t)offsetof(struct reg_map, version))
-#define CRC_XCEL_CTRL_REG_OFFSET ((uint64_t)offsetof(struct reg_map, ctrl))
-#define CRC_XCEL_ADDR_REG_OFFSET ((uint64_t)offsetof(struct reg_map, addr))
-#define CRC_XCEL_LEN_REG_OFFSET ((uint64_t)offsetof(struct reg_map, len))
-#define CRC_XCEL_CRC_REG_OFFSET ((uint64_t)offsetof(struct reg_map, crc))
+#define CRC_XCEL_DEV_VERSION_REG_OFFSET ((uint64_t)offsetof(struct reg_map, version))
+#define CRC_XCEL_DEV_CTRL_REG_OFFSET ((uint64_t)offsetof(struct reg_map, ctrl))
+#define CRC_XCEL_DEV_STATUS_REG_OFFSET ((uint64_t)offsetof(struct reg_map, status))
+#define CRC_XCEL_DEV_ADDR_REG_OFFSET ((uint64_t)offsetof(struct reg_map, addr))
+#define CRC_XCEL_DEV_LEN_REG_OFFSET ((uint64_t)offsetof(struct reg_map, len))
+#define CRC_XCEL_DEV_CRC_REG_OFFSET ((uint64_t)offsetof(struct reg_map, crc))
+
+// Status register defines
+#define CRC_XCEL_DEV_STATUS_REG_RUNNING (1 << 0)
 /*
  **********************************************************************
  */
@@ -47,33 +53,35 @@ static const struct pci_device_id crc_test_dev_ids[] = {
 MODULE_DEVICE_TABLE(pci, crc_test_dev_ids);
 
 struct crc_dev {
-  char name[sizeof(CRC_XCEL_DRV_NAME) + sizeof("xx") + 1];
-  void __iomem *reg_base;
-  struct pci_dev *pdev;
-  int irq;
-  int idx;
-  struct cdev cdev;
+  char              name[sizeof(CRC_XCEL_DRV_NAME) + sizeof("xx") + 1];
+  void __iomem*     reg_base;
+  struct pci_dev*   pdev;
+  int               irq;
+  int               idx;
+  struct cdev       cdev;
+  struct completion irq_comp;
 };
 
 static struct {
   struct {
-    struct crc_dev *refs[CRC_XCEL_MAX_DEVICE_CNT];
-    spinlock_t lock;
+    struct crc_dev* refs[CRC_XCEL_MAX_DEVICE_CNT];
+    spinlock_t      lock;
   } devices;
 
   dev_t crc_xcel_number;
-  struct class *class;
+  struct class* class;
 } crc_drv_ctx;
 
-static void crc_xcel_writeq(u64 val, volatile void __iomem *addr) {
+static void crc_xcel_writeq(u64 val, volatile void __iomem* addr) {
 #ifdef writeq
+  // pr_info("writeq() val:%llx addr:0x%p\n", val, addr);
   writeq(val, addr);
 #else
 #error Port me!!
 #endif
 }
 
-static u64 crc_xcel_readq(volatile void __iomem *addr) {
+static u64 crc_xcel_readq(volatile void __iomem* addr) {
 #ifdef readq
   return readq(addr);
 #else
@@ -81,8 +89,8 @@ static u64 crc_xcel_readq(volatile void __iomem *addr) {
 #endif
 }
 
-static int crc_xcel_open(struct inode *inode, struct file *file) {
-  struct crc_dev *crc_dev;
+static int crc_xcel_open(struct inode* inode, struct file* file) {
+  struct crc_dev* crc_dev;
 
   crc_dev = container_of(inode->i_cdev, struct crc_dev, cdev);
 
@@ -93,26 +101,33 @@ static int crc_xcel_open(struct inode *inode, struct file *file) {
   return 0;
 }
 
-static int crc_xcel_release(struct inode *inode, struct file *file) {
-  struct crc_dev *crc_dev;
+static int crc_xcel_release(struct inode* inode, struct file* file) {
+  struct crc_dev* crc_dev;
 
-  crc_dev = (struct crc_dev *)file->private_data;
+  crc_dev = (struct crc_dev*)file->private_data;
 
   pr_info("%s release called\n", crc_dev->name);
 
   return 0;
 }
 
-static int
-crc_xcel_crc_buffer(struct crc_dev *crc_dev,
-                    const struct crc_xcel_gen_buffer_crc *gen_buffer) {
-  int error = 0;
-  int nr_pages;
-  struct page **pages = NULL;
-  long nr_pages_pinned, pinned_page_idx;
+static int crc_xcel_crc_buffer(struct crc_dev* crc_dev, const struct crc_xcel_gen_buffer_crc* gen_buffer) {
+  int                 error = 0;
+  int                 nr_pages, mapped_cnt, idx;
+  struct page**       pages = NULL;
+  long                nr_pages_pinned, pinned_page_idx;
+  struct scatterlist* sg = NULL;
+  dma_addr_t          dma_addr;
+  size_t              dma_len;
+  u32                 bytes_remaining = gen_buffer->len;
 
-  pr_info("%s crc buffer ptr:0x%llx len:%u\n", crc_dev->name, gen_buffer->addr,
-          gen_buffer->len);
+  pr_info("%s crc buffer ptr:0x%llx len:%u\n", crc_dev->name, gen_buffer->addr, gen_buffer->len);
+
+  if (gen_buffer->addr & (PAGE_SIZE - 1)) {
+    pr_err("%s buffer not not %lu byte aligned\n", crc_dev->name, PAGE_SIZE);
+    error = -EFAULT;
+    goto err_exit;
+  }
 
   nr_pages = DIV_ROUND_UP(gen_buffer->len, PAGE_SIZE);
 
@@ -122,25 +137,66 @@ crc_xcel_crc_buffer(struct crc_dev *crc_dev,
     goto err_exit;
   }
 
-  nr_pages_pinned = pin_user_pages_fast(gen_buffer->addr, nr_pages,
-                                        FOLL_WRITE | FOLL_LONGTERM, pages);
-  if (nr_pages_pinned != nr_pages) {
-    pr_err("%s wrong pinned page cnt (%ld/%d)\n", crc_dev->name,
-           nr_pages_pinned, nr_pages);
-    if (nr_pages_pinned >= 0) {
-      error = -ENOMEM;
-      goto err_exit_unpin;
-    }
+  nr_pages_pinned = pin_user_pages_fast(gen_buffer->addr, nr_pages, FOLL_WRITE | FOLL_LONGTERM, pages);
+  if (nr_pages_pinned < 0) {
     error = nr_pages_pinned;
     goto err_exit_free_pages;
   }
-
-  // iowrite32(0xAA66AABB, crc_dev->reg_base + CRC_XCEL_CTRL_REG_OFFSET);
+  if (nr_pages_pinned != nr_pages) {
+    pr_err("%s wrong pinned page cnt (%ld/%d)\n", crc_dev->name, nr_pages_pinned, nr_pages);
+    error = -ENOMEM;
+    goto err_exit_unpin;
+  }
   pr_info("%s nr_pages:%d\n", crc_dev->name, nr_pages);
 
+  sg = kcalloc(nr_pages_pinned, sizeof(*sg), GFP_KERNEL);
+  if (!sg) {
+    pr_err("%s failed to allocate sg memory\n", crc_dev->name);
+    error = -ENOMEM;
+    goto err_exit_unpin;
+  }
+  sg_init_marker(sg, nr_pages_pinned);  // Do need sg_init_table() as memory already zero'd by kcalloc
+
+  for (pinned_page_idx = 0; pinned_page_idx < nr_pages_pinned; pinned_page_idx++) {
+    sg_set_page(&sg[pinned_page_idx], pages[pinned_page_idx], PAGE_SIZE, 0);
+  }
+
+  mapped_cnt = dma_map_sg(&crc_dev->pdev->dev, sg, nr_pages, DMA_TO_DEVICE);
+  if (!mapped_cnt) {
+    error = -EIO;
+    goto err_exit_free_sg;
+  }
+
+  for (idx = 0; idx < mapped_cnt; idx++) {
+    dma_addr = sg_dma_address(&sg[idx]);
+    dma_len  = sg_dma_len(&sg[idx]);
+
+    if (dma_len > bytes_remaining) {
+      dma_len = bytes_remaining;
+    }
+    bytes_remaining -= dma_len;
+    pr_info("%s dma idx:%d addr:0x%llX len:%lu\n", crc_dev->name, idx, dma_addr, dma_len);
+    crc_xcel_writeq(dma_addr, crc_dev->reg_base + CRC_XCEL_DEV_ADDR_REG_OFFSET);
+    crc_xcel_writeq(dma_len, crc_dev->reg_base + CRC_XCEL_DEV_LEN_REG_OFFSET);
+    writel(0xBEAF, crc_dev->reg_base + CRC_XCEL_DEV_CTRL_REG_OFFSET);
+
+    error = wait_for_completion_interruptible(&crc_dev->irq_comp);
+    if (error) {
+      pr_err("%s interrupted waiting for IRQ\n", crc_dev->name);
+      goto err_exit_unmap;
+    }
+    reinit_completion(&crc_dev->irq_comp);
+  }
+
+err_exit_unmap:
+  dma_unmap_sg(&crc_dev->pdev->dev, sg, nr_pages, DMA_TO_DEVICE);
+
+err_exit_free_sg:
+  if (sg) {
+    kfree(sg);
+  }
 err_exit_unpin:
-  for (pinned_page_idx = 0; pinned_page_idx < nr_pages_pinned;
-       pinned_page_idx++) {
+  for (pinned_page_idx = 0; pinned_page_idx < nr_pages_pinned; pinned_page_idx++) {
     unpin_user_page(pages[pinned_page_idx]);
   }
 err_exit_free_pages:
@@ -151,85 +207,78 @@ err_exit:
   return error;
 }
 
-static long crc_xcel_ioctl(struct file *file, unsigned int cmd,
-                           unsigned long arg) {
-
-  void __user *argp = (void __user *)arg;
-  struct crc_dev *crc_dev = file->private_data;
+static long crc_xcel_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
+  int             error   = 0;
+  void __user*    argp    = (void __user*)arg;
+  struct crc_dev* crc_dev = file->private_data;
 
   switch (cmd) {
-  case CRC_XCEL_GET_VERSION_INFO: {
-    struct crc_xcel_version_info version_info;
+    case CRC_XCEL_GET_VERSION_INFO: {
+      struct crc_xcel_version_info version_info;
 
-    memset(&version_info, 0, sizeof(version_info));
+      memset(&version_info, 0, sizeof(version_info));
 
-    version_info.hw_version =
-        ioread32(crc_dev->reg_base + CRC_XCEL_VERSION_REG_OFFSET);
-    version_info.drv_version = 0x55;
+      version_info.hw_version  = ioread32(crc_dev->reg_base + CRC_XCEL_DEV_VERSION_REG_OFFSET);
+      version_info.drv_version = 0x55;
 
-    if (copy_to_user(argp, &version_info, sizeof(version_info))) {
-      return -EFAULT;
+      error = copy_to_user(argp, &version_info, sizeof(version_info));
+      break;
     }
 
-    break;
-  }
-
-  case CRC_XCEL_RESET_CRC: {
-    const uint64_t crc_default = (uint64_t)0xBDFFFFFFFA;
-    crc_xcel_writeq(crc_default, crc_dev->reg_base + CRC_XCEL_CRC_REG_OFFSET);
-    break;
-  }
-
-  case CRC_XCEL_READ_CRC: {
-    uint64_t crc_val =
-        crc_xcel_readq(crc_dev->reg_base + CRC_XCEL_CRC_REG_OFFSET);
-    if (copy_to_user(argp, &crc_val, sizeof(uint64_t))) {
-      return -EFAULT;
+    case CRC_XCEL_RESET_CRC: {
+      const uint64_t crc_default = (uint64_t)0xBDFFFFFFFA;
+      crc_xcel_writeq(crc_default, crc_dev->reg_base + CRC_XCEL_DEV_CRC_REG_OFFSET);
+      break;
     }
-    break;
-  }
 
-  case CRC_XCEL_CRC_BUFFER: {
-    struct crc_xcel_gen_buffer_crc gen_buffer;
-    if (copy_from_user(&gen_buffer, argp, sizeof(gen_buffer))) {
-      return -EFAULT;
+    case CRC_XCEL_READ_CRC: {
+      uint64_t crc_val = crc_xcel_readq(crc_dev->reg_base + CRC_XCEL_DEV_CRC_REG_OFFSET);
+      error            = copy_to_user(argp, &crc_val, sizeof(uint64_t));
+      break;
     }
-    crc_xcel_crc_buffer(crc_dev, &gen_buffer);
-    break;
+
+    case CRC_XCEL_CRC_BUFFER: {
+      struct crc_xcel_gen_buffer_crc gen_buffer;
+      error = copy_from_user(&gen_buffer, argp, sizeof(gen_buffer));
+      if (error) {
+        break;
+      }
+      error = crc_xcel_crc_buffer(crc_dev, &gen_buffer);
+      break;
+    }
+
+    default: {
+      error = -ENOTTY;
+    }
   }
 
-  default: {
-    return -ENOTTY;
-  }
-  }
-
-  return 0;
+  return error;
 }
 
-static irqreturn_t crc_test_dev_isr(int irq, void *dev_id) {
+static irqreturn_t crc_test_dev_isr(int irq, void* dev_id) {
+  struct crc_dev* crc_dev = (struct crc_dev*)dev_id;
 
   pr_info("IRQ recevied\n");
+  complete(&crc_dev->irq_comp);
   return IRQ_HANDLED;
 }
 
 static struct file_operations crc_xcel_fops = {
-    .owner = THIS_MODULE,
-    .open = crc_xcel_open,
+    .owner          = THIS_MODULE,
+    .open           = crc_xcel_open,
     .unlocked_ioctl = crc_xcel_ioctl,
-    .release = crc_xcel_release,
+    .release        = crc_xcel_release,
 
 };
 
-static int crc_test_dev_probe(struct pci_dev *pdev,
-                              const struct pci_device_id *id) {
-  int error, idx, minor;
-  void __iomem *reg_base;
+static int crc_test_dev_probe(struct pci_dev* pdev, const struct pci_device_id* id) {
+  int             error, idx, minor;
+  void __iomem*   reg_base;
   resource_size_t reg_len;
-  u32 hw_version;
-  struct crc_dev *crc_dev = NULL;
+  u32             hw_version;
+  struct crc_dev* crc_dev = NULL;
 
-  pr_info("%s probe device:0x%04X:0x%04X\n", CRC_XCEL_DRV_NAME, id->vendor,
-          id->device);
+  pr_info("%s probe device:0x%04X:0x%04X\n", CRC_XCEL_DRV_NAME, id->vendor, id->device);
 
   crc_dev = kmalloc(sizeof(*crc_dev), GFP_KERNEL | __GFP_ZERO);
   if (!crc_dev) {
@@ -252,10 +301,10 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
     goto out_free_dev_priv;
   }
 
-  crc_dev->idx = idx;
+  crc_dev->idx  = idx;
   crc_dev->pdev = pdev;
-  scnprintf(crc_dev->name, sizeof(crc_dev->name), "%s%d", CRC_XCEL_DRV_NAME,
-            crc_dev->idx);
+  scnprintf(crc_dev->name, sizeof(crc_dev->name), "%s%d", CRC_XCEL_DRV_NAME, crc_dev->idx);
+  init_completion(&crc_dev->irq_comp);
 
   error = pcim_enable_device(pdev);
   if (error) {
@@ -265,70 +314,60 @@ static int crc_test_dev_probe(struct pci_dev *pdev,
 
   reg_base = pcim_iomap_region(pdev, 0, crc_dev->name);
   if (IS_ERR(reg_base)) {
-    error = dev_err_probe(&pdev->dev, PTR_ERR(reg_base),
-                          "%s Failed to map reg IO memory", crc_dev->name);
+    error = dev_err_probe(&pdev->dev, PTR_ERR(reg_base), "%s Failed to map reg IO memory", crc_dev->name);
     goto out_free_dev_priv;
   }
   crc_dev->reg_base = reg_base;
   pr_info("%s reg_base:%px\n", crc_dev->name, reg_base);
 
   reg_len = pci_resource_len(pdev, 0);
-  if (reg_len != CRC_XCEL_REG_MAP_SIZE) {
+  if (reg_len != CRC_XCEL_DEV_REG_MAP_SIZE) {
     // Using -ENOMEM below stops output string getting to logs...
-    error =
-        dev_err_probe(&pdev->dev, -EINVAL,
-                      "%s Unexpected reg_map length. Got:%llu, expected:%llu",
-                      crc_dev->name, reg_len, CRC_XCEL_REG_MAP_SIZE);
+    error = dev_err_probe(&pdev->dev, -EINVAL, "%s Unexpected reg_map length. Got:%llu, expected:%llu", crc_dev->name, reg_len,
+                          CRC_XCEL_DEV_REG_MAP_SIZE);
     goto out_free_dev_priv;
   }
 
   if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM)) {
-    error = dev_err_probe(&pdev->dev, -EIO, "%s Regmap not memory mapped",
-                          crc_dev->name);
+    error = dev_err_probe(&pdev->dev, -EIO, "%s Regmap not memory mapped", crc_dev->name);
     goto out_free_dev_priv;
   }
 
   error = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_ALL_TYPES);
   if (error != 1) {
     // We're only expecting one
-    error = dev_err_probe(&pdev->dev, -ENOSPC,
-                          "%s failed to allocate irq vectors", crc_dev->name);
+    error = dev_err_probe(&pdev->dev, -ENOSPC, "%s failed to allocate irq vectors", crc_dev->name);
     goto out_free_dev_priv;
   }
 
   crc_dev->irq = pci_irq_vector(pdev, 0);
   pr_info("%s irq:%d\n", crc_dev->name, crc_dev->irq);
 
-  error = request_irq(crc_dev->irq, crc_test_dev_isr, 0, crc_dev->name,
-                      (void *)crc_dev);
+  error = request_irq(crc_dev->irq, crc_test_dev_isr, 0, crc_dev->name, (void*)crc_dev);
   if (error) {
-    dev_err_probe(&pdev->dev, error, "%s failed to request IRQ:%d\n",
-                  crc_dev->name, crc_dev->irq);
+    dev_err_probe(&pdev->dev, error, "%s failed to request IRQ:%d\n", crc_dev->name, crc_dev->irq);
     goto out_free_irq;
   }
 
   // chrdev stuff
   cdev_init(&crc_dev->cdev, &crc_xcel_fops);
   crc_dev->cdev.owner = THIS_MODULE;
-  minor = crc_drv_ctx.crc_xcel_number + crc_dev->idx;
-  error = cdev_add(&crc_dev->cdev, minor, 1);
+  minor               = crc_drv_ctx.crc_xcel_number + crc_dev->idx;
+  error               = cdev_add(&crc_dev->cdev, minor, 1);
   if (error) {
     pr_err("%s failed to add cdev\n", crc_dev->name);
     goto out_free_irq;
   }
-  device_create(crc_drv_ctx.class, NULL,
-                MKDEV(MAJOR(crc_drv_ctx.crc_xcel_number), minor), crc_dev,
-                crc_dev->name);
+  device_create(crc_drv_ctx.class, NULL, MKDEV(MAJOR(crc_drv_ctx.crc_xcel_number), minor), crc_dev, crc_dev->name);
 
   error = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
   if (error) {
-    dev_err_probe(&pdev->dev, error, "%s failed to set DMA mask\n",
-                  crc_dev->name);
+    dev_err_probe(&pdev->dev, error, "%s failed to set DMA mask\n", crc_dev->name);
     goto out_free_irq;
   }
 
   // Now read version register
-  hw_version = ioread32(reg_base + CRC_XCEL_VERSION_REG_OFFSET);
+  hw_version = ioread32(reg_base + CRC_XCEL_DEV_VERSION_REG_OFFSET);
   pr_info("%s hw_ver:0x%08X\n", crc_dev->name, hw_version);
 
   pci_set_drvdata(pdev, crc_dev);
@@ -349,18 +388,17 @@ out_free_dev_priv:
   return error;
 }
 
-static void crc_test_dev_remove(struct pci_dev *pdev) {
-  struct crc_dev *crc_dev = (struct crc_dev *)pci_get_drvdata(pdev);
+static void crc_test_dev_remove(struct pci_dev* pdev) {
+  struct crc_dev* crc_dev = (struct crc_dev*)pci_get_drvdata(pdev);
 
   pr_info("%s remove\n", crc_dev->name);
 
   crc_drv_ctx.devices.refs[crc_dev->idx] = NULL;
 
-  free_irq(crc_dev->irq, (void *)crc_dev);
+  free_irq(crc_dev->irq, (void*)crc_dev);
   pci_free_irq_vectors(pdev);
 
-  device_destroy(crc_drv_ctx.class,
-                 MKDEV(MAJOR(crc_drv_ctx.crc_xcel_number), crc_dev->idx));
+  device_destroy(crc_drv_ctx.class, MKDEV(MAJOR(crc_drv_ctx.crc_xcel_number), crc_dev->idx));
   cdev_del(&crc_dev->cdev);
 
   pci_set_drvdata(pdev, NULL);
@@ -368,10 +406,10 @@ static void crc_test_dev_remove(struct pci_dev *pdev) {
 };
 
 static struct pci_driver crc_test_dev_driver = {
-    .name = CRC_XCEL_DRV_NAME,
+    .name     = CRC_XCEL_DRV_NAME,
     .id_table = crc_test_dev_ids,
-    .probe = crc_test_dev_probe,
-    .remove = crc_test_dev_remove,
+    .probe    = crc_test_dev_probe,
+    .remove   = crc_test_dev_remove,
 };
 
 static int __init crc_test_dev_init(void) {
@@ -381,8 +419,7 @@ static int __init crc_test_dev_init(void) {
 
   crc_drv_ctx.class = class_create(CRC_XCEL_DRV_NAME);
 
-  error = alloc_chrdev_region(&crc_drv_ctx.crc_xcel_number, 0,
-                              CRC_XCEL_MAX_DEVICE_CNT, CRC_XCEL_DRV_NAME);
+  error = alloc_chrdev_region(&crc_drv_ctx.crc_xcel_number, 0, CRC_XCEL_MAX_DEVICE_CNT, CRC_XCEL_DRV_NAME);
   if (error) {
     pr_err("%s failed to alloc chrdevs\n", CRC_XCEL_DRV_NAME);
     goto out;
@@ -405,8 +442,7 @@ static void __exit crc_test_dev_exit(void) {
   pr_info("%s module_exit\n", CRC_XCEL_DRV_NAME);
 
   pci_unregister_driver(&crc_test_dev_driver);
-  unregister_chrdev_region(crc_drv_ctx.crc_xcel_number,
-                           CRC_XCEL_MAX_DEVICE_CNT);
+  unregister_chrdev_region(crc_drv_ctx.crc_xcel_number, CRC_XCEL_MAX_DEVICE_CNT);
   class_destroy(crc_drv_ctx.class);
 }
 

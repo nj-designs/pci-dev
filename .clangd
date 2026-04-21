@@ -1,0 +1,7 @@
+Diagnostics:
+  MissingIncludes: None
+  UnusedIncludes: None
+InlayHints:
+  Enabled: No
+CompileFlags:
+  Remove: ['-M*', '-MF*', '-fdeps-format=*', '-fmodule-mapper=*', '-fmodules-ts*', '-mcpu=*', '-fconserve-stack' ]
